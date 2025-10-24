@@ -27,7 +27,7 @@ class MyClient(discord.Client):
                 return await message.channel.send(f'Desculpe, você demorou. A resposta era {answer}.')
 
             if int(guess.content) == answer:
-                await message.channel.send('Acerou em cheio!')
+                await message.channel.send('Acertou em cheio!')
             else:
                 await message.channel.send(f'Você errou, e a resposta era {answer}.')
 
