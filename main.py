@@ -1,148 +1,148 @@
-from flask import Flask, send_from_directory, redirect, url_for
+# Importar
+from flask import Flask, render_template, request, redirect
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+import os
+import time
+# Importando a biblioteca de banco de dados
+from flask_sqlalchemy import SQLAlchemy
+
 
 app = Flask(__name__)
-import random, os
-facts_list = [
-    "Honey never spoils.",
-    "Bananas are berries, but strawberries aren't.",
-    "A group of flamingos is called a 'flamboyance'.",
-    "Octopuses have three hearts.",
-    "Wombat poop is cube-shaped.",
-    "There are more stars in the universe than grains of sand on Earth.",
-    "A day on Venus is longer than a year on Venus.",
-    "The Eiffel Tower can be 15 cm taller during the summer.",
-    "Sharks have been around longer than trees."]
-@app.route("/")
-def home():
-    return (
-        '<h1>bem vindo ao site MUITO LEGAL!!!!!</h1>'
-        '<h2><a href="/fact">FATOS.INTERESSANTES!!!!!!</a></h2>'
-        '<h2><a href="/about">SOBRE..ESTESITE!!!!!!</a></h2>'
-        '<h2><a href="/fruit">VER FRUTA (imagem low-quality)</a></h2>'
-        '<h2><a href="/ncs">ABRIR UMA MÚSICA NCS ALEATÓRIA</a></h2>'
-    )
-@app.route("/fact")
-def fact():
-    return f'<h1>{random.choice(facts_list)}</h1>' '<h2>você pode refrescar a página para receber um novo fato!' '<h3><a href="/">HOME.HOME</a></h3>'
-@app.route("/about")
-def about():
-    return '<h1>Sobre este site</h1>' '<h2>EU FIZ ESSE SITE, SSSSSSSSIIIIIIIIIIIIIIIIIIIIIMMMMMMMMMMMMMMM!!!!!!</h2>' '<h3><a href="/">HOME.HOME</a></h3>'
+# Conectando ao SQLite
+# Use an absolute path inside the project so the DB is always created in the app folder
+db_path = os.path.join(app.root_path, 'diary.db')
+# Add timeout and relax threading checks for SQLite (helps avoid transient 'database is locked')
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}?timeout=30"
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'connect_args': {'check_same_thread': False, 'timeout': 30}}
+# Criando um Banco de Dados (DB)
+db = SQLAlchemy(app)
 
-# Directory where generated images live
-IMAGES_DIR = os.path.join(os.path.dirname(__file__), 'Images')
-
-# list of generated low-quality image filenames (created by generate_low_quality_fruits.py)
-fruit_files = [
-    'apple_low.jpg',
-    'cantaloupe_low.jpg',
-    'banana_low.jpg',
-    'pear_low.jpg',
-    'orange_low.jpg',
-]
-
-# Small curated list of NCS links (can be extended)
-ncs_list = [
-    'https://www.youtube.com/watch?v=2lYR1kMcUe4',
-    'https://www.youtube.com/watch?v=3JWTaaS7LdU',
-    'https://www.youtube.com/watch?v=7wtfhZwyrcc',
-    'https://www.youtube.com/watch?v=Uj1ykZWtPYI'
-]
+# Drop 'image' column if it exists (SQLite requires table recreation to drop a column)
+def drop_image_column_if_exists():
+    try:
+        res = db.session.execute(text("PRAGMA table_info(card);"))
+        cols = [row[1] if isinstance(row, (tuple, list)) else row['name'] for row in res]
+        if 'image' in cols:
+            # Create a new table without the image column, copy data, replace
+            db.session.execute(text(
+                "CREATE TABLE IF NOT EXISTS card_new (id INTEGER PRIMARY KEY, title VARCHAR(100) NOT NULL, subtitle VARCHAR(200) NOT NULL, text TEXT NOT NULL);"
+            ))
+            db.session.execute(text(
+                "INSERT INTO card_new (id, title, subtitle, text) SELECT id, title, subtitle, text FROM card;"
+            ))
+            db.session.execute(text("DROP TABLE card;"))
+            db.session.execute(text("ALTER TABLE card_new RENAME TO card;"))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
 
 
-@app.route('/images/<path:filename>')
-def images(filename):
-    # Serve images from the Images directory
-    return send_from_directory(IMAGES_DIR, filename)
+def commit_with_retry(session, retries=5, base_delay=0.1):
+    """Commit the session with small retries for transient SQLite locks."""
+    for attempt in range(retries):
+        try:
+            session.commit()
+            return
+        except OperationalError:
+            session.rollback()
+            if attempt < retries - 1:
+                time.sleep(base_delay * (attempt + 1))
+            else:
+                raise
+
+# Run the drop migration immediately to remove image column if it exists
+with app.app_context():
+    drop_image_column_if_exists()
 
 
-@app.route('/fruit')
-def fruit():
-    # pick a random generated fruit image (falls back if file missing)
-    fname = random.choice(fruit_files)
-    image_url = url_for('images', filename=fname)
-    return (
-        f'<h1>Fruta aleatória</h1>'
-        f'<img src="{image_url}" alt="fruit" style="width:420px;height:420px;image-rendering:pixelated;display:block;margin:12px 0;"/>'
-        f'<p><a href="/ncs">Ouvir uma faixa NCS aleatória</a></p>'
-        f'<p><a href="/">Voltar</a></p>'
-    )
+
+# Tarefa #1. Criar uma tabela no Banco de Dados
+class Card(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(100), nullable=False)
+    subtitle = db.Column(db.String(200), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+
+    def __repr__(self):
+        return f'<Card {self.title}>'
+
+# Ensure DB tables exist
+with app.app_context():
+    db.create_all()
 
 
-@app.route('/ncs')
-def ncs():
-    # Redirect to a random NCS YouTube link
-    return redirect(random.choice(ncs_list))
 
 
-def youtube_embed_url(watch_url, autoplay=1):
-    # extract video id from common watch URL formats and return embed URL
-    # examples: https://www.youtube.com/watch?v=VIDEOID or https://youtu.be/VIDEOID
-    vid = None
-    if 'v=' in watch_url:
-        # split on v=
-        parts = watch_url.split('v=')
-        vid = parts[1].split('&')[0]
-    elif 'youtu.be/' in watch_url:
-        vid = watch_url.split('youtu.be/')[1].split('?')[0]
-    if not vid:
-        return watch_url
-    return f'https://www.youtube.com/embed/{vid}?autoplay={1 if autoplay else 0}&rel=0&modestbranding=1'
 
 
-@app.route('/ncsfruit')
-@app.route('/NCSFRUIT')
-def ncsfruit():
-    # Serve a dedicated page showing a random fruit image and an embedded NCS player
-    fname = random.choice(fruit_files)
-    watch = random.choice(ncs_list)
-    embed = youtube_embed_url(watch, autoplay=1)
-    image_url = url_for('images', filename=fname)
-    # Inline minimal JS to fallback to drawing a pixel fruit if image missing
-    html_template = """<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>NCS + Fruit</title>
-    <style>
-        body{font-family:Segoe UI,Arial;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-        .card{background:#1b1b1b;padding:18px;border-radius:8px;max-width:900px;width:100%;display:flex;gap:18px;align-items:center}
-        img{width:420px;height:420px;image-rendering:pixelated;border-radius:6px;background:#222}
-        .right{flex:1;color:#eee}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <img id="fruitImg" src="__IMAGE__" alt="fruit" onerror="fallbackDraw()"/>
-        <div class="right">
-            <h2>Now playing (NCS)</h2>
-            <div id="playerWrap"><iframe id="player" width="420" height="236" src="__EMBED__" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe></div>
-            <p><button id="playBtn">Play (if autoplay blocked)</button></p>
-            <p><a href="/">Voltar</a></p>
-        </div>
-    </div>
 
-    <script>
-    function fallbackDraw(){
-        try{
-            const px=64; const canvas=document.createElement('canvas'); canvas.width=px; canvas.height=px;
-            const ctx=canvas.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,px,px);
-            // simple circle fruit
-            ctx.fillStyle='#d11b2b'; ctx.beginPath(); ctx.arc(px/2,px/2,px*0.32,0,Math.PI*2); ctx.fill();
-            const img=document.getElementById('fruitImg'); img.src=canvas.toDataURL('image/jpeg',0.18);
-        }catch(e){console.warn(e);}
-    }
-    document.getElementById('playBtn').addEventListener('click',function(){
-        var iframe=document.getElementById('player');
-        // reload iframe with autoplay parameter to encourage playback after user gesture
-        var src=iframe.src; if(src.indexOf('autoplay=1')===-1){ src=src+ (src.indexOf('?')===-1?'?':'&') + 'autoplay=1';} iframe.src=src;
-    });
-    </script>
-</body>
-</html>
-"""
-    html = html_template.replace('__IMAGE__', image_url).replace('__EMBED__', embed)
-    return html
+# Executando a página com conteúdo
+@app.route('/')
+def index():
+    # Exibindo os objetos do Banco de Dados
+    # Tarefa #2. Exibir os objetos do Banco de Dados no index.html
+    cards = Card.query.all()
+    return render_template('index.html', cards=cards) 
+
+# Executando a página com o cartão
+@app.route('/card/<int:id>')
+def card(id):
+    # Tarefa #2. Exibir o cartão correto pelo seu id
+    card = Card.query.get_or_404(id)
+    return render_template('card.html', card=card)
+
+@app.route('/card/<int:id>/delete', methods=['POST'])
+def delete_card(id):
+    # Remove the card from the database and redirect to index
+    card = Card.query.get_or_404(id)
+    db.session.delete(card)
+    commit_with_retry(db.session)
+    return redirect('/')
+
+# Edit an existing card (GET shows form, POST saves changes)
+@app.route('/card/<int:id>/edit', methods=['GET','POST'])
+def edit_card(id):
+    card = Card.query.get_or_404(id)
+    if request.method == 'POST':
+
+        # Normal save
+        card.title = request.form['title']
+        card.subtitle = request.form['subtitle']
+        card.text = request.form['text']
+        commit_with_retry(db.session)
+        return redirect(f"/card/{card.id}")
+    return render_template('edit_card.html', card=card)
+
+# Executando a página e criando o cartão
+@app.route('/create')
+def create():
+    return render_template('create_card.html')
+
+# O formulário do cartão
+@app.route('/form_create', methods=['GET','POST'])
+def form_create():
+    if request.method == 'POST':
+        title =  request.form['title']
+        subtitle =  request.form['subtitle']
+        text =  request.form['text']
+
+        # Tarefa #2. Criar uma forma de armazenar dados no Banco de Dados
+        new_card = Card(title=title, subtitle=subtitle, text=text)
+        db.session.add(new_card)
+        commit_with_retry(db.session)
+        
 
 
-if __name__ == '__main__':
+
+
+        return redirect('/')
+    else:
+        return render_template('create_card.html')
+
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
     app.run(debug=True)
