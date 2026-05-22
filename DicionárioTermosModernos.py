@@ -2,7 +2,8 @@ import time
 meme_dict = {
             "CRINGE": "Algo vergonhoso ou constrangedor.",
             "STALKEAR": "Investigar a vida de alguém online.",
-            "67": "Palavra que não tem significado comum."
+            "67": "Palavra que não tem significado comum.",
+            "BETA": "Pessoa cujo não é sigma."
             }
 while True:
     word = input("Digite uma palavra moderna que você não entende (escreva todo a palavra em letras maiúsculas): ")
